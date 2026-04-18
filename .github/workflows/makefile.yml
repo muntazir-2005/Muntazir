@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-13  # ⬅️ هذا هو التغيير الوحيد (يستخدم Xcode 15.4)
 
     steps:
       - name: 📥 Checkout repository
@@ -29,9 +29,9 @@ jobs:
           cp Dobby/include/dobby.h .
           cp Dobby/build/libdobby.a .
 
-      - name: 🔨 Build UniversalHook.dylib (Smart Optimized)
+      - name: 🔨 Build UniversalHook.dylib
         run: |
-          clang++ -dynamiclib -std=c++17 -O0 -g -Wno-everything \
+          clang++ -dynamiclib -std=c++17 -O0 -g \
             -framework Foundation -framework CoreFoundation -framework AppKit \
             -I. -L. -ldobby \
             -o UniversalHook.dylib \
