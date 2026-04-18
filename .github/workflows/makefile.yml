@@ -1,35 +1,29 @@
 name: Build UniversalHook
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-13  # ⬅️ هذا هو التغيير الوحيد (يستخدم Xcode 15.4)
+    runs-on: self-hosted   # سينفذ على جهازك الشخصي
 
     steps:
-      - name: 📥 Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 📦 Prepare dependencies (flat structure)
+      - name: Prepare dependencies
         run: |
           git clone --depth 1 https://github.com/facebook/fishhook.git
           cp fishhook/fishhook.h .
-
           git clone --depth 1 https://github.com/jmpews/Dobby.git
-          cd Dobby
-          mkdir -p build && cd build
+          cd Dobby && mkdir -p build && cd build
           cmake .. -DDOBBY_GENERATE_SHARED=OFF -DCMAKE_BUILD_TYPE=Release
           make -j$(sysctl -n hw.ncpu)
           cd ../..
           cp Dobby/include/dobby.h .
           cp Dobby/build/libdobby.a .
 
-      - name: 🔨 Build UniversalHook.dylib
+      - name: Build
         run: |
           clang++ -dynamiclib -std=c++17 -O0 -g \
             -framework Foundation -framework CoreFoundation -framework AppKit \
@@ -37,7 +31,7 @@ jobs:
             -o UniversalHook.dylib \
             UniversalHook.mm
 
-      - name: 📦 Upload UniversalHook.dylib
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: UniversalHook-macOS
