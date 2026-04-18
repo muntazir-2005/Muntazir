@@ -17,28 +17,23 @@ jobs:
 
       - name: 📦 Prepare dependencies (flat structure)
         run: |
-          # استنساخ fishhook ونسخ الملف المطلوب فقط
           git clone --depth 1 https://github.com/facebook/fishhook.git
           cp fishhook/fishhook.h .
 
-          # استنساخ Dobby وبناؤه
           git clone --depth 1 https://github.com/jmpews/Dobby.git
           cd Dobby
           mkdir -p build && cd build
           cmake .. -DDOBBY_GENERATE_SHARED=OFF -DCMAKE_BUILD_TYPE=Release
           make -j$(sysctl -n hw.ncpu)
           cd ../..
-          # نسخ الملفات المطلوبة إلى الجذر
           cp Dobby/include/dobby.h .
           cp Dobby/build/libdobby.a .
 
-      - name: 🔨 Build UniversalHook.dylib
+      - name: 🔨 Build UniversalHook.dylib (Safe Mode)
         run: |
-          clang++ -dynamiclib -std=c++17 -O2 -Wall \
+          clang++ -dynamiclib -std=c++17 -O0 -g -Wno-everything \
             -framework Foundation -framework CoreFoundation -framework AppKit \
-            -I. \
-            -L. \
-            -ldobby \
+            -I. -L. -ldobby \
             -o UniversalHook.dylib \
             UniversalHook.mm
 
