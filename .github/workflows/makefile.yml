@@ -5,7 +5,7 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch:   # يسمح بالتشغيل اليدوي
+  workflow_dispatch:
 
 jobs:
   build:
@@ -15,22 +15,43 @@ jobs:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 📦 Clone dependencies
+      - name: 📦 Clone and prepare dependencies
         run: |
+          # استنساخ fishhook
           git clone https://github.com/facebook/fishhook.git
+          # استنساخ Dobby
           git clone https://github.com/jmpews/Dobby.git
+          
+          # بناء Dobby
           cd Dobby
-          mkdir build && cd build
+          mkdir -p build && cd build
           cmake .. -DDOBBY_GENERATE_SHARED=OFF -DCMAKE_BUILD_TYPE=Release
           make -j$(sysctl -n hw.ncpu)
           cd ../..
+          
+          # تجهيز المجلدات بالشكل الذي يتوقعه الكود
+          # الكود يتضمن #include "Dobby/dobby.h" و #include "fishhook/fishhook.h"
+          # لذلك ننشئ مجلد Dobby وننسخ إليه الملف من include/
+          mkdir -p Dobby_hdr
+          cp Dobby/include/dobby.h Dobby_hdr/
+          # ننشئ مجلد fishhook وننسخ إليه الملف
+          mkdir -p fishhook_hdr
+          cp fishhook/fishhook.h fishhook_hdr/
+          
+          # الآن أصبح لدينا:
+          # ./Dobby_hdr/dobby.h
+          # ./fishhook_hdr/fishhook.h
+          # سنستخدم -I. ليشمل المجلد الحالي، ثم نضيف مجلدات الرأس المؤقتة
 
       - name: 🔨 Build UniversalHook.dylib
         run: |
           clang++ -dynamiclib -std=c++17 -O2 -Wall \
             -framework Foundation -framework CoreFoundation -framework AppKit \
-            -I./Dobby/include -I./fishhook \
-            -L./Dobby/build -ldobby \
+            -I. \
+            -I./Dobby_hdr \
+            -I./fishhook_hdr \
+            -L./Dobby/build \
+            -ldobby \
             -o UniversalHook.dylib \
             UniversalHook.mm
 
