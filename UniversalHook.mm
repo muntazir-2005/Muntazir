@@ -19,45 +19,28 @@
 #include "dobby.h"
 #include "fishhook.h"
 
-// ================================================
-// إعلانات مسبقة للدوال التي سيتم اعتراضها
-// ================================================
-static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
-static OSStatus my_LSRegisterURL(CFURLRef url, Boolean update);
-static CFArrayRef my_LSCopyAllApplicationURLs(void);
-static os_log_t my_os_log_create(const char *subsystem, const char *category);
-static void my_os_log_set_config(os_log_t log, void *config);
-static int my_fprintf(FILE *stream, const char *format, ...);
-static FSEventStreamRef my_FSEventStreamCreate(CFAllocatorRef allocator, FSEventStreamCallback callback, FSEventStreamContext *context, CFArrayRef pathsToWatch, FSEventStreamEventId sinceWhen, CFTimeInterval latency, FSEventStreamCreateFlags flags);
-static int my_proc_listallpids(void *buffer, int buffersize);
-static int my_proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
-static const char *my_getprogname(void);
-static int my_getpid(void);
-static kern_return_t my_mach_port_allocate(ipc_space_t task, mach_port_right_t right, mach_port_name_t *name);
-static mach_msg_return_t my_mach_msg(mach_msg_header_t *msg, mach_msg_option_t option, mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_t rcv_name, mach_msg_timeout_t timeout, mach_port_t notify);
-static int my_connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-
-// متغيرات أصلية
-static int (*original_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
-static OSStatus (*original_LSRegisterURL)(CFURLRef, Boolean);
-static CFArrayRef (*original_LSCopyAllApplicationURLs)(void);
-static os_log_t (*original_os_log_create)(const char *, const char *);
-static void (*original_os_log_set_config)(os_log_t, void *);
-static int (*original_fprintf)(FILE *, const char *, ...);
-static FSEventStreamRef (*original_FSEventStreamCreate)(CFAllocatorRef, FSEventStreamCallback, FSEventStreamContext *, CFArrayRef, FSEventStreamEventId, CFTimeInterval, FSEventStreamCreateFlags);
-static int (*original_proc_listallpids)(void *, int);
-static int (*original_proc_pidinfo)(int, int, uint64_t, void *, int);
-static const char *(*original_getprogname)(void);
-static int (*original_getpid)(void);
-static kern_return_t (*original_mach_port_allocate)(ipc_space_t, mach_port_right_t, mach_port_name_t *);
-static mach_msg_return_t (*original_mach_msg)(mach_msg_header_t *, mach_msg_option_t, mach_msg_size_t, mach_msg_size_t, mach_port_t, mach_msg_timeout_t, mach_port_t);
-static int (*original_connect)(int, const struct sockaddr *, socklen_t);
-
 // دوال المراقبة المساعدة (تم إضافتها لتصحيح أخطاء self)
 static BOOL isSecurityScanInProgress(void);
 static void activateCounterMeasures(void);
 static void hideAppImmediately(NSString *appID);
 static void updateProtectionMechanisms(void);
+
+// تعريفات خارجية لدوال الاعتراض (سيتم تنفيذها في Hooks.mm)
+extern void setupAllHooks(void);
+extern int (*original_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
+extern OSStatus (*original_LSRegisterURL)(CFURLRef, Boolean);
+extern CFArrayRef (*original_LSCopyAllApplicationURLs)(void);
+extern os_log_t (*original_os_log_create)(const char *, const char *);
+extern void (*original_os_log_set_config)(os_log_t, void *);
+extern int (*original_fprintf)(FILE *, const char *, ...);
+extern FSEventStreamRef (*original_FSEventStreamCreate)(CFAllocatorRef, FSEventStreamCallback, FSEventStreamContext *, CFArrayRef, FSEventStreamEventId, CFTimeInterval, FSEventStreamCreateFlags);
+extern int (*original_proc_listallpids)(void *, int);
+extern int (*original_proc_pidinfo)(int, int, uint64_t, void *, int);
+extern const char *(*original_getprogname)(void);
+extern int (*original_getpid)(void);
+extern kern_return_t (*original_mach_port_allocate)(ipc_space_t, mach_port_right_t, mach_port_name_t *);
+extern mach_msg_return_t (*original_mach_msg)(mach_msg_header_t *, mach_msg_option_t, mach_msg_size_t, mach_msg_size_t, mach_port_t, mach_msg_timeout_t, mach_port_t);
+extern int (*original_connect)(int, const struct sockaddr *, socklen_t);
 
 // ================================================
 // 🚫 1. نظام كشف وإخفاء التطبيقات الخارجية
@@ -879,71 +862,12 @@ static void updateProtectionMechanisms(void);
 @end
 
 // ================================================
-// تعريف دوال الاعتراض (تنفيذ فعلي)
-// ================================================
-static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
-    // تصفية بسيطة
-    return original_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
-}
-static OSStatus my_LSRegisterURL(CFURLRef url, Boolean update) { return noErr; }
-static CFArrayRef my_LSCopyAllApplicationURLs(void) { return CFArrayCreate(NULL, NULL, 0, NULL); }
-static os_log_t my_os_log_create(const char *subsystem, const char *category) { return NULL; }
-static void my_os_log_set_config(os_log_t log, void *config) {}
-static int my_fprintf(FILE *stream, const char *format, ...) { return 0; }
-static FSEventStreamRef my_FSEventStreamCreate(CFAllocatorRef a, FSEventStreamCallback c, FSEventStreamContext *ctx, CFArrayRef paths, FSEventStreamEventId id, CFTimeInterval lat, FSEventStreamCreateFlags f) { return NULL; }
-static int my_proc_listallpids(void *buffer, int buffersize) { return original_proc_listallpids(buffer, buffersize); }
-static int my_proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize) {
-    if (pid == getpid()) return 0;
-    return original_proc_pidinfo(pid, flavor, arg, buffer, buffersize);
-}
-static const char *my_getprogname(void) { return "Finder"; }
-static int my_getpid(void) { static int fake = 0; if (!fake) fake = arc4random_uniform(1000)+100; return fake; }
-static kern_return_t my_mach_port_allocate(ipc_space_t t, mach_port_right_t r, mach_port_name_t *n) { return KERN_SUCCESS; }
-static mach_msg_return_t my_mach_msg(mach_msg_header_t *m, mach_msg_option_t o, mach_msg_size_t s, mach_msg_size_t r, mach_port_t p, mach_msg_timeout_t t, mach_port_t n) { return original_mach_msg(m,o,s,r,p,t,n); }
-static int my_connect(int fd, const struct sockaddr *addr, socklen_t len) { return original_connect(fd, addr, len); }
-
-// ================================================
 // تعريف دوال المراقبة المساعدة
 // ================================================
 static BOOL isSecurityScanInProgress() { return NO; }
 static void activateCounterMeasures() {}
 static void hideAppImmediately(NSString *appID) {}
 static void updateProtectionMechanisms() {}
-
-// ================================================
-// ⚡ 8. نظام التنشيط والتشغيل (مع إعداد الهوكات)
-// ================================================
-
-__attribute__((constructor))
-static void setupHooks() {
-    // ربط fishhook
-    struct rebinding rebinds[] = {
-        {"sysctl", (void*)my_sysctl, (void**)&original_sysctl},
-        {"fprintf", (void*)my_fprintf, (void**)&original_fprintf},
-        {"connect", (void*)my_connect, (void**)&original_connect}
-    };
-    rebind_symbols(rebinds, sizeof(rebinds)/sizeof(rebinds[0]));
-    
-    // ربط Dobby لبقية الدوال
-    void *LSRegisterURL_ptr = dlsym(RTLD_DEFAULT, "LSRegisterURL");
-    if (LSRegisterURL_ptr) DobbyHook(LSRegisterURL_ptr, (void*)my_LSRegisterURL, (void**)&original_LSRegisterURL);
-    void *LSCopyAllApps = dlsym(RTLD_DEFAULT, "_LSCopyAllApplicationURLs");
-    if (LSCopyAllApps) DobbyHook(LSCopyAllApps, (void*)my_LSCopyAllApplicationURLs, (void**)&original_LSCopyAllApplicationURLs);
-    void *os_log_create_ptr = dlsym(RTLD_DEFAULT, "os_log_create");
-    if (os_log_create_ptr) DobbyHook(os_log_create_ptr, (void*)my_os_log_create, (void**)&original_os_log_create);
-    void *os_log_set_config_ptr = dlsym(RTLD_DEFAULT, "os_log_set_config");
-    if (os_log_set_config_ptr) DobbyHook(os_log_set_config_ptr, (void*)my_os_log_set_config, (void**)&original_os_log_set_config);
-    void *FSEventStreamCreate_ptr = dlsym(RTLD_DEFAULT, "FSEventStreamCreate");
-    if (FSEventStreamCreate_ptr) DobbyHook(FSEventStreamCreate_ptr, (void*)my_FSEventStreamCreate, (void**)&original_FSEventStreamCreate);
-    void *proc_listallpids = dlsym(RTLD_DEFAULT, "proc_listallpids");
-    if (proc_listallpids) DobbyHook(proc_listallpids, (void*)my_proc_listallpids, (void**)&original_proc_listallpids);
-    void *proc_pidinfo = dlsym(RTLD_DEFAULT, "proc_pidinfo");
-    if (proc_pidinfo) DobbyHook(proc_pidinfo, (void*)my_proc_pidinfo, (void**)&original_proc_pidinfo);
-    void *mach_port_allocate_ptr = dlsym(RTLD_DEFAULT, "mach_port_allocate");
-    if (mach_port_allocate_ptr) DobbyHook(mach_port_allocate_ptr, (void*)my_mach_port_allocate, (void**)&original_mach_port_allocate);
-    void *mach_msg_ptr = dlsym(RTLD_DEFAULT, "mach_msg");
-    if (mach_msg_ptr) DobbyHook(mach_msg_ptr, (void*)my_mach_msg, (void**)&original_mach_msg);
-}
 
 // دالة لبدء المراقبة المستمرة (معرّفة في السياق العام)
 static void startContinuousMonitoring(void) {
@@ -973,6 +897,9 @@ __attribute__((constructor))
 static void ExternalBypass_Init() {
     @autoreleasepool {
         NSLog(@"[EXTERNAL BYPASS] 🚀 تهيئة نظام تجاوز الفحص");
+        
+        // استدعاء إعداد الهوكات (موجود في Hooks.mm)
+        setupAllHooks();
         
         // الانتظار حتى استقرار النظام
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), 
