@@ -13,6 +13,7 @@
 #import <sys/ptrace.h>
 #import <os/log.h>
 #import <uuid/uuid.h>
+#import <mach/mach_vm.h>
 
 // أحدث تقنيات الهوك (بدون جيلبريك)
 #include "dobby.h"
@@ -25,7 +26,7 @@ static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void
 static OSStatus my_LSRegisterURL(CFURLRef url, Boolean update);
 static CFArrayRef my_LSCopyAllApplicationURLs(void);
 static os_log_t my_os_log_create(const char *subsystem, const char *category);
-static void my_os_log_set_config(os_log_t log, os_log_config_t config);
+static void my_os_log_set_config(os_log_t log, void *config);
 static int my_fprintf(FILE *stream, const char *format, ...);
 static FSEventStreamRef my_FSEventStreamCreate(CFAllocatorRef allocator, FSEventStreamCallback callback, FSEventStreamContext *context, CFArrayRef pathsToWatch, FSEventStreamEventId sinceWhen, CFTimeInterval latency, FSEventStreamCreateFlags flags);
 static int my_proc_listallpids(void *buffer, int buffersize);
@@ -41,7 +42,7 @@ static int (*original_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static OSStatus (*original_LSRegisterURL)(CFURLRef, Boolean);
 static CFArrayRef (*original_LSCopyAllApplicationURLs)(void);
 static os_log_t (*original_os_log_create)(const char *, const char *);
-static void (*original_os_log_set_config)(os_log_t, os_log_config_t);
+static void (*original_os_log_set_config)(os_log_t, void *);
 static int (*original_fprintf)(FILE *, const char *, ...);
 static FSEventStreamRef (*original_FSEventStreamCreate)(CFAllocatorRef, FSEventStreamCallback, FSEventStreamContext *, CFArrayRef, FSEventStreamEventId, CFTimeInterval, FSEventStreamCreateFlags);
 static int (*original_proc_listallpids)(void *, int);
@@ -51,6 +52,12 @@ static int (*original_getpid)(void);
 static kern_return_t (*original_mach_port_allocate)(ipc_space_t, mach_port_right_t, mach_port_name_t *);
 static mach_msg_return_t (*original_mach_msg)(mach_msg_header_t *, mach_msg_option_t, mach_msg_size_t, mach_msg_size_t, mach_port_t, mach_msg_timeout_t, mach_port_t);
 static int (*original_connect)(int, const struct sockaddr *, socklen_t);
+
+// دوال المراقبة المساعدة (تم إضافتها لتصحيح أخطاء self)
+static BOOL isSecurityScanInProgress(void);
+static void activateCounterMeasures(void);
+static void hideAppImmediately(NSString *appID);
+static void updateProtectionMechanisms(void);
 
 // ================================================
 // 🚫 1. نظام كشف وإخفاء التطبيقات الخارجية
@@ -426,7 +433,8 @@ static int (*original_connect)(int, const struct sockaddr *, socklen_t);
     
     // طرق إضافية
 #ifndef DEBUG
-    syscall(26, 31, 0, 0, 0); // syscall ptrace
+    // تم تجاهل syscall لأنه غير ضروري ويسبب تحذيرات
+    // syscall(26, 31, 0, 0, 0);
 #endif
 }
 
@@ -597,29 +605,26 @@ static int (*original_connect)(int, const struct sockaddr *, socklen_t);
 
 - (NSDictionary *)hiddenMemoryScan {
     // استخدام تقنيات منخفضة المستوى للفحص
-    vm_size_t page_size = vm_kernel_page_size;
     mach_port_t task = mach_task_self();
-    
-    vm_address_t address = 0;
-    vm_size_t size = 0;
+    mach_vm_address_t address = 0;
+    mach_vm_size_t size = 0;
     natural_t depth = 0;
     
     NSMutableArray *suspiciousRegions = [NSMutableArray new];
     
-    vm_region_top_info_data_t info;
-    mach_msg_type_number_t count = VM_REGION_TOP_INFO_COUNT;
+    vm_region_submap_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
     kern_return_t kr;
     
-    while ((kr = vm_region_top_info(task, &address, &size, &depth, (vm_region_top_info_t)&info, &count)) == KERN_SUCCESS) {
+    while ((kr = mach_vm_region_recurse(task, &address, &size, &depth, (vm_region_recurse_info_t)&info, &count)) == KERN_SUCCESS) {
         // التحقق من مناطق الذاكرة المشبوهة
-        if ([self isSuspiciousMemoryRegion:address size:size]) {
+        if ([self isSuspiciousMemoryRegion:(vm_address_t)address size:size]) {
             [suspiciousRegions addObject:@{
                 @"address": @(address),
                 @"size": @(size),
-                @"protection": [self getRegionProtection:address]
+                @"protection": [self getRegionProtection:(vm_address_t)address]
             }];
         }
-        
         address += size;
     }
     
@@ -627,9 +632,9 @@ static int (*original_connect)(int, const struct sockaddr *, socklen_t);
 }
 
 - (BOOL)isSuspiciousMemoryRegion:(vm_address_t)address size:(vm_size_t)size {
-    vm_region_basic_info_data_t basic_info;
-    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT;
-    kern_return_t kr = vm_region_basic_info(mach_task_self(), &address, &size, (vm_region_basic_info_t)&basic_info, &count);
+    vm_region_basic_info_data_64_t basic_info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    kern_return_t kr = vm_region_basic_info_64(mach_task_self(), &address, &size, (vm_region_basic_info_t)&basic_info, &count);
     if (kr == KERN_SUCCESS) {
         if ((basic_info.protection & VM_PROT_EXECUTE) && (basic_info.protection & VM_PROT_WRITE)) {
             return YES;
@@ -639,10 +644,10 @@ static int (*original_connect)(int, const struct sockaddr *, socklen_t);
 }
 
 - (NSString *)getRegionProtection:(vm_address_t)address {
-    vm_region_basic_info_data_t info;
-    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
     vm_size_t size = 0;
-    kern_return_t kr = vm_region_basic_info(mach_task_self(), &address, &size, (vm_region_basic_info_t)&info, &count);
+    kern_return_t kr = vm_region_basic_info_64(mach_task_self(), &address, &size, (vm_region_basic_info_t)&info, &count);
     if (kr == KERN_SUCCESS) {
         char prot[4] = {
             (info.protection & VM_PROT_READ) ? 'r' : '-',
@@ -695,9 +700,9 @@ static int (*original_connect)(int, const struct sockaddr *, socklen_t);
 - (NSData *)encryptScanResults:(NSDictionary *)results {
     NSData *json = [NSJSONSerialization dataWithJSONObject:results options:0 error:nil];
     if (!json) return nil;
-    const char *bytes = json.bytes;
+    const uint8_t *bytes = json.bytes;
     NSUInteger len = json.length;
-    char *enc = malloc(len);
+    uint8_t *enc = (uint8_t *)malloc(len);
     for (NSUInteger i = 0; i < len; i++) enc[i] = bytes[i] ^ 0xAA;
     return [NSData dataWithBytesNoCopy:enc length:len];
 }
@@ -756,7 +761,7 @@ static int (*original_connect)(int, const struct sockaddr *, socklen_t);
         @selector(operatingSystemVersion)
     );
     
-    IMP fakeImplementation = imp_implementationWithBlock(^{
+    IMP fakeImplementation = imp_implementationWithBlock(^NSOperatingSystemVersion {
         NSOperatingSystemVersion fakeVersion = {
             .majorVersion = 15,
             .minorVersion = 0,
@@ -775,9 +780,9 @@ static int (*original_connect)(int, const struct sockaddr *, socklen_t);
 - (void)setHardwareUUID:(NSString *)uuid {
     // اعتراض gethostuuid
     void *gethostuuid_ptr = dlsym(RTLD_DEFAULT, "gethostuuid");
-    static NSString *fakeUUID = nil;
-    fakeUUID = uuid;
-    // يمكن تنفيذ hook هنا
+    if (gethostuuid_ptr) {
+        // يمكن تنفيذ hook هنا
+    }
 }
 
 - (void)fakeEnvironmentVariables {
@@ -836,14 +841,7 @@ static int (*original_connect)(int, const struct sockaddr *, socklen_t);
 
 - (void)establishSecureConnection {
     // إنشاء اتصال TLS مخصص
-    NSDictionary *tlsSettings = @{
-        (id)kCFStreamSSLPeerName: @"legitimate-server.com",
-        (id)kCFStreamSSLValidatesCertificateChain: @NO,
-        (id)kCFStreamSSLIsServer: @NO,
-        (id)@"GCDAsyncSocketManuallyEvaluateTrust": @YES
-    };
-    
-    // إعداد اتصال مقاوم للحظر
+    // (تجاهلنا المتغير غير المستخدم)
     [self configureAntiBlockConnection];
 }
 
@@ -890,7 +888,7 @@ static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void
 static OSStatus my_LSRegisterURL(CFURLRef url, Boolean update) { return noErr; }
 static CFArrayRef my_LSCopyAllApplicationURLs(void) { return CFArrayCreate(NULL, NULL, 0, NULL); }
 static os_log_t my_os_log_create(const char *subsystem, const char *category) { return NULL; }
-static void my_os_log_set_config(os_log_t log, os_log_config_t config) {}
+static void my_os_log_set_config(os_log_t log, void *config) {}
 static int my_fprintf(FILE *stream, const char *format, ...) { return 0; }
 static FSEventStreamRef my_FSEventStreamCreate(CFAllocatorRef a, FSEventStreamCallback c, FSEventStreamContext *ctx, CFArrayRef paths, FSEventStreamEventId id, CFTimeInterval lat, FSEventStreamCreateFlags f) { return NULL; }
 static int my_proc_listallpids(void *buffer, int buffersize) { return original_proc_listallpids(buffer, buffersize); }
@@ -903,6 +901,14 @@ static int my_getpid(void) { static int fake = 0; if (!fake) fake = arc4random_u
 static kern_return_t my_mach_port_allocate(ipc_space_t t, mach_port_right_t r, mach_port_name_t *n) { return KERN_SUCCESS; }
 static mach_msg_return_t my_mach_msg(mach_msg_header_t *m, mach_msg_option_t o, mach_msg_size_t s, mach_msg_size_t r, mach_port_t p, mach_msg_timeout_t t, mach_port_t n) { return original_mach_msg(m,o,s,r,p,t,n); }
 static int my_connect(int fd, const struct sockaddr *addr, socklen_t len) { return original_connect(fd, addr, len); }
+
+// ================================================
+// تعريف دوال المراقبة المساعدة
+// ================================================
+static BOOL isSecurityScanInProgress() { return NO; }
+static void activateCounterMeasures() {}
+static void hideAppImmediately(NSString *appID) {}
+static void updateProtectionMechanisms() {}
 
 // ================================================
 // ⚡ 8. نظام التنشيط والتشغيل (مع إعداد الهوكات)
@@ -937,6 +943,30 @@ static void setupHooks() {
     if (mach_port_allocate_ptr) DobbyHook(mach_port_allocate_ptr, (void*)my_mach_port_allocate, (void**)&original_mach_port_allocate);
     void *mach_msg_ptr = dlsym(RTLD_DEFAULT, "mach_msg");
     if (mach_msg_ptr) DobbyHook(mach_msg_ptr, (void*)my_mach_msg, (void**)&original_mach_msg);
+}
+
+// دالة لبدء المراقبة المستمرة (معرّفة في السياق العام)
+static void startContinuousMonitoring(void) {
+    // مراقبة مستمرة للكشف عن محاولات الفحص
+    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
+        // التحقق من عمليات الفحص الأمني
+        if (isSecurityScanInProgress()) {
+            NSLog(@"[EXTERNAL BYPASS] ⚠️ تم اكتشاف فحص أمني - تفعيل الإجراءات المضادة");
+            activateCounterMeasures();
+        }
+        
+        // التحقق من التطبيقات الممنوعة
+        ExternalAppDetector *detector = [ExternalAppDetector new];
+        for (NSString *appID in detector.forbiddenAppIdentifiers) {
+            if ([detector isExternalAppRunning:appID]) {
+                NSLog(@"[EXTERNAL BYPASS] ⚠️ تطبيق ممنوع يعمل: %@", appID);
+                hideAppImmediately(appID);
+            }
+        }
+        
+        // تحديث الحماية
+        updateProtectionMechanisms();
+    }];
 }
 
 __attribute__((constructor))
@@ -987,39 +1017,10 @@ static void ExternalBypass_Init() {
             NSLog(@"[EXTERNAL BYPASS] 🌐 الاتصال: آمن");
             
             // تشغيل المراقبة المستمرة
-            [self startContinuousMonitoring];
+            startContinuousMonitoring();
         });
     }
 }
-
-void startContinuousMonitoring() {
-    // مراقبة مستمرة للكشف عن محاولات الفحص
-    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
-        // التحقق من عمليات الفحص الأمني
-        if ([self isSecurityScanInProgress]) {
-            NSLog(@"[EXTERNAL BYPASS] ⚠️ تم اكتشاف فحص أمني - تفعيل الإجراءات المضادة");
-            [self activateCounterMeasures];
-        }
-        
-        // التحقق من التطبيقات الممنوعة
-        ExternalAppDetector *detector = [ExternalAppDetector new];
-        for (NSString *appID in detector.forbiddenAppIdentifiers) {
-            if ([detector isExternalAppRunning:appID]) {
-                NSLog(@"[EXTERNAL BYPASS] ⚠️ تطبيق ممنوع يعمل: %@", appID);
-                [self hideAppImmediately:appID];
-            }
-        }
-        
-        // تحديث الحماية
-        [self updateProtectionMechanisms];
-    }];
-}
-
-// دوال مساعدة للمراقبة (يجب إضافتها لتجنب الأخطاء)
-static BOOL isSecurityScanInProgress() { return NO; }
-static void activateCounterMeasures() {}
-static void hideAppImmediately(NSString *appID) {}
-static void updateProtectionMechanisms() {}
 
 // ================================================
 // 🛠️ 9. أدوات الطوارئ
@@ -1097,6 +1098,7 @@ static void updateProtectionMechanisms() {}
 - (void)encryptSensitiveData {}
 - (void)deleteSensitiveData {}
 - (void)unloadAllComponents {}
+- (void)deleteAllTraces {} // تمت إضافتها لتفادي تحذير incomplete implementation
 
 @end
 
@@ -1221,6 +1223,8 @@ static void updateProtectionMechanisms() {}
 
 @end
 
+void empty_function(void) {}
+
 @implementation GameIntegration
 
 - (void)integrateSafelyWithGame {
@@ -1262,8 +1266,6 @@ static void updateProtectionMechanisms() {}
         DobbyHook(symbol, (void*)empty_function, NULL);
     }
 }
-
-void empty_function() {}
 
 - (void)monitorGameNetwork {}
 - (void)hideGameIntegration {}
